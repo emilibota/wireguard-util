@@ -120,7 +120,13 @@ get_ip_cmd() {
 }
 
 server_private_key() {
-  awk -F= '/^[[:space:]]*PrivateKey[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$(conf)"
+    awk '
+/^[[:space:]]*PrivateKey[[:space:]]*=/ {
+    sub(/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*/, "")
+    sub(/[[:space:]]*$/, "")
+    print
+    exit
+}' "$(conf)"
 }
 
 server_public_key() {
