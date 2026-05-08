@@ -8,6 +8,7 @@ if command -v wgu >/dev/null 2>&1; then
 else
   SCRIPT_NAME="$(basename "$0")"
 fi
+RAW_REPO_URL="https://raw.githubusercontent.com/emilibota/wireguard-util/main/"
 DIR="/etc/wireguard"
 CONF_NAME="wg0"
 DEFAULT_IP="10.8.0.1"
@@ -259,14 +260,18 @@ create_client() {
 
   C_PRIV_FILE="$DIR/$CLIENT.key"
   C_PUB_FILE="$DIR/$CLIENT.pub"
+  C_PSK_FILE="$DIR/$CLIENT.psk"
 
   wg genkey > "$C_PRIV_FILE"
   chmod 600 "$C_PRIV_FILE"
   wg pubkey < "$C_PRIV_FILE" > "$C_PUB_FILE"
   chmod 644 "$C_PUB_FILE"
+  wg genpsk > "$C_PSK_FILE"
+  chmod 600 "$C_PSK_FILE"
 
   C_PRIV="$(cat "$C_PRIV_FILE")"
   C_PUB="$(cat "$C_PUB_FILE")"
+  C_PSK="$(cat "$C_PSK_FILE")"
   S_PUB="$(server_public_key)"
   PORT="$(get_port_cmd -d "$DIR")"
   ENDPOINT="$(get_endpoint_ip)"
@@ -277,6 +282,7 @@ create_client() {
 # client:$CLIENT
 [Peer]
 PublicKey = $C_PUB
+PresharedKey = $C_PSK
 AllowedIPs = $IP/32
 EOF
 
@@ -290,12 +296,13 @@ Address = $IP/32$( [ -n "$DNS" ] && printf '\nDNS = %s' "$DNS" )
 
 [Peer]
 PublicKey = $S_PUB
+PresharedKey = $C_PSK
 Endpoint = $ENDPOINT:$PORT
 AllowedIPs = $(echo "$IP" | cut -d. -f1-3).0/24
 PersistentKeepalive = 25
 EOF
 
-  SETUP_CMD="curl -fsSL https://raw.githubusercontent.com/emilibota/wireguard-util/main/$SCRIPT_NAME | bash -s -- setup-client -e $ENDPOINT:$PORT -i $IP -s $S_PUB"
+  SETUP_CMD="curl -fsSL ${RAW_REPO_URL}wg-util.sh | bash -s -- setup-client -e $ENDPOINT:$PORT -i $IP -s $S_PUB"
   [ -n "$DNS" ] && SETUP_CMD="$SETUP_CMD --dns $DNS"
 
   cat <<EOF
@@ -306,6 +313,10 @@ $( cat "$CLIENT_CONFIG_FILE" )
 Direct installation script for "$CLIENT" (run on the client machine):
 
 $SETUP_CMD
+
+You will need to input the following when running the setup command:
+- Client private key: $(cat "$C_PRIV_FILE")
+- Preshared key: $(cat "$C_PSK_FILE")
 EOF
 }
 
@@ -353,6 +364,11 @@ setup_client() {
     esac
   done
 
+  while [ -f "$(conf)" ]; do
+    printf "Config '$(conf)' already exists. Enter a different interface name: "
+    read CONF_NAME
+  done
+
   if [ -z "$ENDPOINT" ]; then
     printf "Server endpoint (IP:PORT): "
     read ENDPOINT
@@ -371,18 +387,22 @@ setup_client() {
     printf '\n'
   fi
 
+  printf "Client private key (from create-client output): "
+  stty -echo 2>/dev/null || true
+  read C_PRIV
+  stty echo 2>/dev/null || true
+  printf '\n'
+
+  printf "Preshared key (from create-client output): "
+  stty -echo 2>/dev/null || true
+  read C_PSK
+  stty echo 2>/dev/null || true
+  printf '\n'
+
   [ -n "$ALLOWED_IPS" ] || ALLOWED_IPS="$(echo "$IP" | cut -d. -f1-3).0/24"
 
   mkdir -p "$DIR"
   chmod 700 "$DIR"
-
-  wg genkey > "$DIR/$CONF_NAME.key"
-  chmod 600 "$DIR/$CONF_NAME.key"
-  wg pubkey < "$DIR/$CONF_NAME.key" > "$DIR/$CONF_NAME.pub"
-  chmod 644 "$DIR/$CONF_NAME.pub"
-
-  C_PRIV="$(cat "$DIR/$CONF_NAME.key")"
-  C_PUB="$(cat "$DIR/$CONF_NAME.pub")"
 
   cat > "$(conf)" <<EOF
 [Interface]
@@ -391,6 +411,7 @@ Address = $IP/32$( [ -n "$DNS" ] && printf '\nDNS = %s' "$DNS" )
 
 [Peer]
 PublicKey = $SERVER_PUBKEY
+PresharedKey = $C_PSK
 Endpoint = $ENDPOINT
 AllowedIPs = $ALLOWED_IPS
 PersistentKeepalive = $KEEPALIVE
@@ -398,20 +419,6 @@ EOF
   chmod 600 "$(conf)"
 
   wg-quick up "$CONF_NAME"
-
-  cat <<EOF
-
-Client configured successfully.
-Client public key (add this to the server):
-  $C_PUB
-
-On the server, run:
-  $SCRIPT_NAME create-client <name> -i $IP
-or manually add to server config:
-  [Peer]
-  PublicKey = $C_PUB
-  AllowedIPs = $IP/32
-EOF
 }
 
 client_disconnect() {
