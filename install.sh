@@ -60,11 +60,15 @@ printf 'Installed bash completions -> %s/wgu\n' "$BASH_COMP_DIR"
 if [ "$IS_ROOT" -eq 0 ]; then
   # Ensure ~/.bashrc sources bash_completion.d
   BASHRC="$HOME/.bashrc"
-  SOURCE_LINE="for f in \"\$HOME/.bash_completion.d/\"*; do [ -f \"\$f\" ] && . \"\$f\"; done"
-  if [ -f "$BASHRC" ] && grep -qF '.bash_completion.d' "$BASHRC" 2>/dev/null; then
+  if [ -f "$BASHRC" ] && grep -qF '# BEGIN wgu' "$BASHRC" 2>/dev/null; then
     : # already present
   else
-    printf '\n# bash completions\n%s\n' "$SOURCE_LINE" >> "$BASHRC"
+    cat >> "$BASHRC" <<'EOF'
+
+# BEGIN wgu
+for f in "$HOME/.bash_completion.d/"*; do [ -f "$f" ] && . "$f"; done
+# END wgu
+EOF
     printf 'Added bash completion sourcing to %s\n' "$BASHRC"
   fi
 fi
@@ -82,19 +86,10 @@ if command -v zsh >/dev/null 2>&1; then
 
   if [ "$IS_ROOT" -eq 0 ]; then
     ZSHRC="$HOME/.zshrc"
-    FPATH_LINE="fpath=(\"$ZSH_COMP_DIR\" \$fpath)"
-    COMPINIT_LINE="autoload -Uz compinit && compinit"
-    NEEDS_UPDATE=0
-
-    if [ ! -f "$ZSHRC" ] || ! grep -qF "$ZSH_COMP_DIR" "$ZSHRC" 2>/dev/null; then
-      printf '\n# zsh completions\n%s\n' "$FPATH_LINE" >> "$ZSHRC"
-      NEEDS_UPDATE=1
-    fi
-    if [ ! -f "$ZSHRC" ] || ! grep -qF 'compinit' "$ZSHRC" 2>/dev/null; then
-      printf '%s\n' "$COMPINIT_LINE" >> "$ZSHRC"
-      NEEDS_UPDATE=1
-    fi
-    if [ "$NEEDS_UPDATE" -eq 1 ]; then
+    if [ -f "$ZSHRC" ] && grep -qF '# BEGIN wgu' "$ZSHRC" 2>/dev/null; then
+      : # already present
+    else
+      printf '\n# BEGIN wgu\nfpath=("%s" $fpath)\nautoload -Uz compinit && compinit\n# END wgu\n' "$ZSH_COMP_DIR" >> "$ZSHRC"
       printf 'Added zsh fpath + compinit to %s\n' "$ZSHRC"
     fi
   fi

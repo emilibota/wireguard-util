@@ -16,6 +16,22 @@ To install from a local clone:
 bash install.sh
 ```
 
+## Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emilibota/wireguard-util/main/uninstall.sh | bash
+```
+
+Or from a local clone:
+
+```sh
+bash uninstall.sh
+```
+
+This removes `wg-util.sh`, the `wgu` wrapper, and the shell completion files, and cleans the sourcing lines added to `~/.bashrc` and `~/.zshrc`.
+
+---
+
 ## Server setup
 
 Initialize the WireGuard server:
