@@ -302,7 +302,7 @@ AllowedIPs = $(echo "$IP" | cut -d. -f1-3).0/24
 PersistentKeepalive = 25
 EOF
 
-  SETUP_CMD="curl -fsSL ${RAW_REPO_URL}wg-util.sh | bash -s -- setup-client -e $ENDPOINT:$PORT -i $IP -s $S_PUB"
+  SETUP_CMD="bash <(curl -fsSL ${RAW_REPO_URL}wg-util.sh) setup-client -e $ENDPOINT:$PORT -i $IP -s $S_PUB"
   [ -n "$DNS" ] && SETUP_CMD="$SETUP_CMD --dns $DNS"
 
   cat <<EOF
