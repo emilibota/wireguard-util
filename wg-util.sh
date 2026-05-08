@@ -1,9 +1,13 @@
-#!/bin/sh
+#!/bin/bash
 ## Inspired by https://www.smarthomebeginner.com/linux-wireguard-vpn-server-setup/
 set -eu
 umask 077
 
-SCRIPT_NAME="$(basename "$0")"
+if command -v wgu >/dev/null 2>&1; then
+  SCRIPT_NAME="wgu"
+else
+  SCRIPT_NAME="$(basename "$0")"
+fi
 DIR="/etc/wireguard"
 CONF_NAME="wg0"
 DEFAULT_IP="10.8.0.1"
