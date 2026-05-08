@@ -159,14 +159,17 @@ next_client_ip() {
 }
 
 sync_wg() {
-  # Brute-force new config
-  #wg-quick down "$CONF_NAME" >/dev/null 2>&1 || true
-  #wg-quick up "$(conf)"
-  # Soft change
-  _tmp="$(mktemp)"
-  wg-quick strip "$CONF_NAME" > "$_tmp"
-  wg syncconf "$CONF_NAME" "$_tmp"
-  rm -f "$_tmp"
+  if wg show "$CONF_NAME" >/dev/null 2>&1; then
+    # Interface is up:
+    # - Option 1: Brute-force new config
+    #wg-quick down "$CONF_NAME" >/dev/null 2>&1 || true
+    #wg-quick up "$(conf)"
+    # - Option 2: Soft change
+    wg syncconf "$CONF_NAME" <(wg-quick strip "$CONF_NAME")
+  else
+    # Interface is down or doesn't exist yet: bring it up
+    wg-quick up "$(conf)"
+  fi
 }
 
 set_server() {
