@@ -1,21 +1,29 @@
 #!/bin/sh
 ## Inspired by https://www.smarthomebeginner.com/linux-wireguard-vpn-server-setup/
 set -eu
+umask 077
 
+SCRIPT_NAME="$(basename "$0")"
 DIR="/etc/wireguard"
 CONF_NAME="wg0"
 DEFAULT_IP="10.8.0.1"
 YES=0
 
 usage() {
-cat <<'EOF'
+cat << EOF
 Usage:
-  wg-util.sh [-y] [-c NAME] set-server [-p PORT] [-i IP] [-pv PRIVATE_KEY_FILE] [-pu PUBLIC_KEY_FILE] [-d DIR]
-  wg-util.sh [-y] [-c NAME] get-port [-d DIR]
-  wg-util.sh [-y] [-c NAME] get-ip [-d DIR]
-  wg-util.sh [-y] [-c NAME] create-client CLIENT [-i IP] [--dns DNS] [-d DIR]
-  wg-util.sh [-y] [-c NAME] remove-client CLIENT [-d DIR]
-  wg-util.sh -h | --help
+  $SCRIPT_NAME [-y] [-c NAME] set-server [-p PORT] [-i IP] [-pv PRIVATE_KEY_FILE] [-pu PUBLIC_KEY_FILE] [-d DIR]
+  $SCRIPT_NAME [-y] [-c NAME] get-port [-d DIR]
+  $SCRIPT_NAME [-y] [-c NAME] get-ip [-d DIR]
+  $SCRIPT_NAME [-y] [-c NAME] create-client CLIENT [-i IP] [--dns DNS] [-d DIR]
+  $SCRIPT_NAME [-y] [-c NAME] remove-client CLIENT [-d DIR]
+  $SCRIPT_NAME [-y] [-c NAME] setup-client [-e ENDPOINT] [-i IP] [-s SERVER_PUBKEY] [--dns DNS] [--keepalive N] [--allowed-ips IPs] [-d DIR]
+  $SCRIPT_NAME [-c NAME] client-disconnect
+  $SCRIPT_NAME [-c NAME] client-status
+  $SCRIPT_NAME [-c NAME] client-enable
+  $SCRIPT_NAME [-c NAME] client-disable
+  $SCRIPT_NAME completions [bash|zsh]
+  $SCRIPT_NAME -h | --help
 
 Global:
   -y                      install WireGuard without prompting
@@ -31,6 +39,19 @@ set-server:
 create-client:
   -i, --ip IP             client IP without CIDR; auto if omitted
   --dns DNS               optional DNS in client config
+
+setup-client:
+  -e, --endpoint ENDPOINT server endpoint as IP:PORT
+  -i, --ip IP             client IP without CIDR
+  -s, --server-pubkey KEY server public key (prompted with hidden input if omitted)
+  --dns DNS               optional DNS server
+  --keepalive N           PersistentKeepalive seconds; default 25
+  --allowed-ips IPs       AllowedIPs; default 0.0.0.0/0
+  -d, --directory DIR     default /etc/wireguard
+
+completions:
+  bash                    output bash completion script (default)
+  zsh                     output zsh completion script
 EOF
 }
 
@@ -132,8 +153,14 @@ next_client_ip() {
 }
 
 sync_wg() {
-  wg-quick down "$CONF_NAME" >/dev/null 2>&1 || true
-  wg-quick up "$(conf)"
+  # Brute-force new config
+  #wg-quick down "$CONF_NAME" >/dev/null 2>&1 || true
+  #wg-quick up "$(conf)"
+  # Soft change
+  _tmp="$(mktemp)"
+  wg-quick strip "$CONF_NAME" > "$_tmp"
+  wg syncconf "$CONF_NAME" "$_tmp"
+  rm -f "$_tmp"
 }
 
 set_server() {
@@ -241,10 +268,9 @@ AllowedIPs = $IP/32
 EOF
 
   sync_wg
-
-  cat <<EOF
-Client config for $CLIENT:
-
+  
+  CLIENT_CONFIG_FILE="$DIR/$CLIENT.conf"
+  cat >> "$CLIENT_CONFIG_FILE" << EOF
 [Interface]
 PrivateKey = $C_PRIV
 Address = $IP/32$( [ -n "$DNS" ] && printf '\nDNS = %s' "$DNS" )
@@ -252,8 +278,21 @@ Address = $IP/32$( [ -n "$DNS" ] && printf '\nDNS = %s' "$DNS" )
 [Peer]
 PublicKey = $S_PUB
 Endpoint = $ENDPOINT:$PORT
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = $(echo "$IP" | cut -d. -f1-3).0/24
 PersistentKeepalive = 25
+EOF
+
+  SETUP_CMD="curl -fsSL https://raw.githubusercontent.com/emilibota/wireguard-util/main/$SCRIPT_NAME | bash -s -- setup-client -e $ENDPOINT:$PORT -i $IP -s $S_PUB"
+  [ -n "$DNS" ] && SETUP_CMD="$SETUP_CMD --dns $DNS"
+
+  cat <<EOF
+Client config for "$CLIENT":
+---
+$( cat "$CLIENT_CONFIG_FILE" )
+---
+Direct installation script for "$CLIENT" (run on the client machine):
+
+$SETUP_CMD
 EOF
 }
 
@@ -277,12 +316,281 @@ remove_client() {
   echo "Removed client: $CLIENT"
 }
 
+setup_client() {
+  need_root; install_wg
+
+  ENDPOINT=""
+  IP=""
+  SERVER_PUBKEY=""
+  DNS=""
+  KEEPALIVE=25
+  ALLOWED_IPS=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -e|--endpoint) ENDPOINT="$2"; shift 2 ;;
+      -i|--ip) IP="$(strip_cidr "$2")"; shift 2 ;;
+      -s|--server-pubkey) SERVER_PUBKEY="$2"; shift 2 ;;
+      --dns) DNS="$2"; shift 2 ;;
+      --keepalive) KEEPALIVE="$2"; shift 2 ;;
+      --allowed-ips) ALLOWED_IPS="$2"; shift 2 ;;
+      -d|--directory) DIR="$2"; shift 2 ;;
+      -c|--conf-name) CONF_NAME="$2"; shift 2 ;;
+      *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  if [ -z "$ENDPOINT" ]; then
+    printf "Server endpoint (IP:PORT): "
+    read ENDPOINT
+  fi
+
+  if [ -z "$IP" ]; then
+    printf "Client IP (without CIDR, e.g. 10.8.0.2): "
+    read IP
+  fi
+
+  if [ -z "$SERVER_PUBKEY" ]; then
+    printf "Server public key: "
+    stty -echo 2>/dev/null || true
+    read SERVER_PUBKEY
+    stty echo 2>/dev/null || true
+    printf '\n'
+  fi
+
+  [ -n "$ALLOWED_IPS" ] || ALLOWED_IPS="$(echo "$IP" | cut -d. -f1-3).0/24"
+
+  mkdir -p "$DIR"
+  chmod 700 "$DIR"
+
+  wg genkey > "$DIR/$CONF_NAME.key"
+  chmod 600 "$DIR/$CONF_NAME.key"
+  wg pubkey < "$DIR/$CONF_NAME.key" > "$DIR/$CONF_NAME.pub"
+  chmod 644 "$DIR/$CONF_NAME.pub"
+
+  C_PRIV="$(cat "$DIR/$CONF_NAME.key")"
+  C_PUB="$(cat "$DIR/$CONF_NAME.pub")"
+
+  cat > "$(conf)" <<EOF
+[Interface]
+PrivateKey = $C_PRIV
+Address = $IP/32$( [ -n "$DNS" ] && printf '\nDNS = %s' "$DNS" )
+
+[Peer]
+PublicKey = $SERVER_PUBKEY
+Endpoint = $ENDPOINT
+AllowedIPs = $ALLOWED_IPS
+PersistentKeepalive = $KEEPALIVE
+EOF
+  chmod 600 "$(conf)"
+
+  wg-quick up "$CONF_NAME"
+
+  cat <<EOF
+
+Client configured successfully.
+Client public key (add this to the server):
+  $C_PUB
+
+On the server, run:
+  $SCRIPT_NAME create-client <name> -i $IP
+or manually add to server config:
+  [Peer]
+  PublicKey = $C_PUB
+  AllowedIPs = $IP/32
+EOF
+}
+
+client_disconnect() {
+  parse_common "$@"
+  need_root
+  wg-quick down "$CONF_NAME"
+}
+
+client_status() {
+  parse_common "$@"
+  need_root
+  wg show "$CONF_NAME"
+}
+
+client_enable() {
+  parse_common "$@"
+  need_root
+  systemctl enable "wg-quick@$CONF_NAME"
+}
+
+client_disable() {
+  parse_common "$@"
+  need_root
+  systemctl disable "wg-quick@$CONF_NAME"
+}
+
+completions_cmd() {
+  SHELL_TYPE="${1:-bash}"
+
+  case "$SHELL_TYPE" in
+    bash)
+      cat <<'BASH_COMP'
+_wgu() {
+  local cur prev cword
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  cword=$COMP_CWORD
+
+  local cmds="set-server get-port get-ip create-client remove-client setup-client client-disconnect client-status client-enable client-disable completions"
+  local global_opts="-y -c --conf-name -h --help"
+
+  if [ $cword -eq 1 ]; then
+    COMPREPLY=($(compgen -W "$cmds $global_opts" -- "$cur"))
+    return
+  fi
+
+  local subcmd="${COMP_WORDS[1]}"
+  case "$subcmd" in
+    set-server)
+      case "$prev" in
+        -pv|--private-key|-pu|--public-key|-d|--directory)
+          COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      COMPREPLY=($(compgen -W "-p --port -i --ip -pv --private-key -pu --public-key -d --directory" -- "$cur")) ;;
+    get-port|get-ip)
+      case "$prev" in
+        -d|--directory) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      COMPREPLY=($(compgen -W "-d --directory" -- "$cur")) ;;
+    create-client)
+      case "$prev" in
+        -d|--directory) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      COMPREPLY=($(compgen -W "-i --ip --dns -d --directory" -- "$cur")) ;;
+    remove-client)
+      case "$prev" in
+        -d|--directory) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      COMPREPLY=($(compgen -W "-d --directory" -- "$cur")) ;;
+    setup-client)
+      case "$prev" in
+        -d|--directory) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      COMPREPLY=($(compgen -W "-e --endpoint -i --ip -s --server-pubkey --dns --keepalive --allowed-ips -d --directory" -- "$cur")) ;;
+    client-disconnect|client-status|client-enable|client-disable)
+      COMPREPLY=($(compgen -W "-c --conf-name" -- "$cur")) ;;
+    completions)
+      COMPREPLY=($(compgen -W "bash zsh" -- "$cur")) ;;
+  esac
+}
+complete -F _wgu wgu
+BASH_COMP
+      ;;
+    zsh)
+      cat <<'ZSH_COMP'
+#compdef wgu
+
+_wgu() {
+  local state
+
+  _arguments \
+    '(-y)-y[auto-install WireGuard without prompting]' \
+    '(-c --conf-name)-c[interface/config name]:name' \
+    '(-c --conf-name)--conf-name[interface/config name]:name' \
+    '(-h --help)-h[show help]' \
+    '(-h --help)--help[show help]' \
+    '1: :->cmd' \
+    '*:: :->args'
+
+  case $state in
+    cmd)
+      local cmds
+      cmds=(
+        'set-server:initialize WireGuard server'
+        'get-port:print server listen port'
+        'get-ip:print server IP address'
+        'create-client:add a client peer to server config'
+        'remove-client:remove a client peer from server config'
+        'setup-client:configure this machine as a WireGuard client'
+        'client-disconnect:bring down WireGuard client interface'
+        'client-status:show WireGuard interface status'
+        'client-enable:enable WireGuard client on boot'
+        'client-disable:disable WireGuard client on boot'
+        'completions:output shell completion script'
+      )
+      _describe 'command' cmds ;;
+    args)
+      case $words[1] in
+        set-server)
+          _arguments \
+            '(-p --port)-p[listen port]:port' \
+            '(-p --port)--port[listen port]:port' \
+            '(-i --ip)-i[server IP without CIDR]:ip' \
+            '(-i --ip)--ip[server IP without CIDR]:ip' \
+            '(-pv --private-key)-pv[private key file]:file:_files' \
+            '(-pv --private-key)--private-key[private key file]:file:_files' \
+            '(-pu --public-key)-pu[public key file]:file:_files' \
+            '(-pu --public-key)--public-key[public key file]:file:_files' \
+            '(-d --directory)-d[config directory]:dir:_files -/' \
+            '(-d --directory)--directory[config directory]:dir:_files -/' ;;
+        get-port|get-ip)
+          _arguments \
+            '(-d --directory)-d[config directory]:dir:_files -/' \
+            '(-d --directory)--directory[config directory]:dir:_files -/' ;;
+        create-client)
+          _arguments \
+            '1:client name' \
+            '(-i --ip)-i[client IP without CIDR]:ip' \
+            '(-i --ip)--ip[client IP without CIDR]:ip' \
+            '--dns[DNS server]:dns' \
+            '(-d --directory)-d[config directory]:dir:_files -/' \
+            '(-d --directory)--directory[config directory]:dir:_files -/' ;;
+        remove-client)
+          _arguments \
+            '1:client name' \
+            '(-d --directory)-d[config directory]:dir:_files -/' \
+            '(-d --directory)--directory[config directory]:dir:_files -/' ;;
+        setup-client)
+          _arguments \
+            '(-e --endpoint)-e[server endpoint IP:PORT]:endpoint' \
+            '(-e --endpoint)--endpoint[server endpoint IP:PORT]:endpoint' \
+            '(-i --ip)-i[client IP without CIDR]:ip' \
+            '(-i --ip)--ip[client IP without CIDR]:ip' \
+            '(-s --server-pubkey)-s[server public key]:key' \
+            '(-s --server-pubkey)--server-pubkey[server public key]:key' \
+            '--dns[DNS server]:dns' \
+            '--keepalive[PersistentKeepalive seconds]:seconds' \
+            '--allowed-ips[AllowedIPs]:ips' \
+            '(-d --directory)-d[config directory]:dir:_files -/' \
+            '(-d --directory)--directory[config directory]:dir:_files -/' ;;
+        client-disconnect|client-status|client-enable|client-disable)
+          _arguments \
+            '(-c --conf-name)-c[interface name]:name' \
+            '(-c --conf-name)--conf-name[interface name]:name' ;;
+        completions)
+          _arguments '1:shell:(bash zsh)' ;;
+      esac ;;
+  esac
+}
+
+_wgu "$@"
+ZSH_COMP
+      ;;
+    *)
+      printf "Unknown shell: %s. Use 'bash' or 'zsh'.\n" "$SHELL_TYPE" >&2
+      exit 1 ;;
+  esac
+}
+
 case "$cmd" in
   set-server) set_server "$@" ;;
   get-port) get_port_cmd "$@" ;;
   get-ip) get_ip_cmd "$@" ;;
   create-client) create_client "$@" ;;
   remove-client) remove_client "$@" ;;
+  setup-client) setup_client "$@" ;;
+  client-disconnect) client_disconnect "$@" ;;
+  client-status) client_status "$@" ;;
+  client-enable) client_enable "$@" ;;
+  client-disable) client_disable "$@" ;;
+  completions) completions_cmd "$@" ;;
   -h|--help) usage ;;
   *) usage; exit 1 ;;
 esac
